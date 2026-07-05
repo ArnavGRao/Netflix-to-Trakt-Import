@@ -5,13 +5,14 @@ import logging
 import re
 from time import sleep
 
-from tenacity import retry, stop_after_attempt, wait_random
+from tenacity import RetryError, retry, stop_after_attempt, wait_random
 from tmdbv3api import TV, Episode, Movie, Season, TMDb
 from tmdbv3api.exceptions import TMDbException
 from tqdm import tqdm
 
 import config
 from NetflixTvShow import NetflixTvHistory
+from netflix_history_batches import NETFLIX_HISTORY_BATCH_SIZE, getNetflixHistoryBatches
 from TraktIO import TraktIO
 
 
@@ -315,6 +316,35 @@ def syncToTrakt(traktIO):
         pass
 
 
+def processHistoryBatch(netflixHistory, tmdb, traktIO):
+    """
+    Process one parsed Netflix history batch and sync the matched items to Trakt.
+
+    :param netflixHistory: Parsed Netflix history batch
+    :param tmdb: TMDB class object that contains information related to specified account
+    :param traktIO: Trakt class object that holds Trakt information (API, list of shows/movies, etc.)
+    """
+    for show in tqdm(netflixHistory.shows, desc="Finding and adding shows to Trakt.."):
+        try:
+            getShowInformation(show, tmdb, config.TMDB_EPISODE_LANGUAGE_SEARCH, traktIO)
+        except RetryError as err:
+            logging.error("TMDB retry exhausted for show %s: %s", show.name, err)
+        except Exception as err:
+            logging.error("Unexpected error while processing show %s: %s", show.name, err)
+
+    for movie in tqdm(
+        netflixHistory.movies, desc="Finding and adding movies to Trakt.."
+    ):
+        try:
+            getMovieInformation(movie, config.TMDB_SYNC_STRICT, traktIO)
+        except RetryError as err:
+            logging.error("TMDB retry exhausted for movie %s: %s", movie.name, err)
+        except Exception as err:
+            logging.error("Unexpected error while processing movie %s: %s", movie.name, err)
+
+    syncToTrakt(traktIO)
+
+
 def main():
     """
     Main function that pulls information from config.ini to parse Netflix viewing history and adds identified matches on TMDB to Trakt.
@@ -329,23 +359,13 @@ def main():
     traktIO = setupTrakt(config.TRAKT_API_SYNC_PAGE_SIZE, config.TRAKT_API_DRY_RUN)
     traktIO.init()
 
-    # Parse Netflix History file
-    netflixHistory = getNetflixHistory(
-        config.VIEWING_HISTORY_FILENAME, config.CSV_DELIMITER
-    )
-
-    # Get show information
-    for show in tqdm(netflixHistory.shows, desc="Finding and adding shows to Trakt.."):
-        getShowInformation(show, tmdb, config.TMDB_EPISODE_LANGUAGE_SEARCH, traktIO)
-
-    # Get movie information
-    for movie in tqdm(
-        netflixHistory.movies, desc="Finding and adding movies to Trakt.."
+    # Parse Netflix History file in batches and process each batch independently
+    for netflixHistory in getNetflixHistoryBatches(
+        config.VIEWING_HISTORY_FILENAME,
+        config.CSV_DELIMITER,
+        NETFLIX_HISTORY_BATCH_SIZE,
     ):
-        getMovieInformation(movie, config.TMDB_SYNC_STRICT, traktIO)
-
-    # Sync to Trakt
-    syncToTrakt(traktIO)
+        processHistoryBatch(netflixHistory, tmdb, traktIO)
 
 
 if __name__ == "__main__":

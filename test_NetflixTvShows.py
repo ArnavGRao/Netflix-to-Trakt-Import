@@ -1,7 +1,10 @@
 import unittest
 from datetime import datetime
+import os
+import tempfile
 
 from NetflixTvShow import NetflixTvHistory, NetflixTvShow
+from netflix_history_batches import getNetflixHistoryBatches
 
 
 def test_addSingleTvShow():
@@ -53,6 +56,22 @@ def test_addMovie():
 class TestNetflixTvHistory(unittest.TestCase):
     def setUp(self):
         self.history = NetflixTvHistory()
+
+    def test_getNetflixHistoryBatches_splits_into_chunks_of_250(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, encoding="utf-8") as tempFile:
+            tempFile.write("Title,Date\n")
+            for index in range(251):
+                tempFile.write(f"Show {index}: Season 1: Episode {index},03.10.21\n")
+            tempFilePath = tempFile.name
+
+        try:
+            batches = list(getNetflixHistoryBatches(tempFilePath, ",", 250))
+        finally:
+            os.unlink(tempFilePath)
+
+        self.assertEqual(len(batches), 2)
+        self.assertEqual(len(batches[0].shows), 250)
+        self.assertEqual(len(batches[1].shows), 1)
 
     def test_getTvShow(self):
         self.assertIsNone(self.history.getTvShow("Stranger Things"))
